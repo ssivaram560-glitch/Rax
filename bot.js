@@ -1578,11 +1578,12 @@ function analyzeLuciferNumberToSizeHistory(historyList, currentRow) {
     };
     const currentTime = timeKey({ timestamp: Number(current.timestamp) || 0, issue: currentIssue });
 
-    const countFor = (indices, targetFn = row => row.number) => {
+    const countFor = (indices, targetFn = row => row.number, weightFn = () => 1) => {
         const counts = Array(10).fill(0);
         for (const index of indices) {
             const digit = targetFn(history[index]);
-            if (Number.isInteger(digit) && digit >= 0 && digit <= 9) counts[digit]++;
+            const weight = Number(weightFn(index)) || 0;
+            if (Number.isInteger(digit) && digit >= 0 && digit <= 9) counts[digit] += weight;
         }
         return counts;
     };
@@ -1620,12 +1621,15 @@ function analyzeLuciferNumberToSizeHistory(historyList, currentRow) {
     }
     const timingModel = rankFive(countFor(timingIndices), 'NUMBER-' + currentNumber + '-TIME-' + currentTime);
 
-    // Model E: recent number trend, capped so it cannot override a strong
-    // three-number pattern merely because it is recent.
-    const recentCount = Math.min(100, history.length);
-    const recentModel = rankFive(countFor(Array.from({ length: recentCount }, (_, i) => i)), 'RECENT-' + recentCount + '-NUMBERS');
+    // Model E: recency-weighted trend across EVERY history row. This is not a
+    // 100-row slice: old rows still contribute with a small weight, so the
+    // complete API history participates in the ranking.
+    const recencyModel = rankFive(
+        countFor(allIndices, row => row.number, index => Math.exp(-index / 5000)),
+        'ALL-NUMBER-RECENCY-WEIGHTED'
+    );
 
-    const models = [frequencyModel, transitionModel, tripleModel, timingModel, recentModel];
+    const models = [frequencyModel, transitionModel, tripleModel, timingModel, recencyModel];
     const sizeOf = digit => digit <= 4 ? 'SMALL' : 'BIG';
 
     // Backtest a model's final SIZE choice against the same type of historical
@@ -1655,7 +1659,9 @@ function analyzeLuciferNumberToSizeHistory(historyList, currentRow) {
                 if (sizeOf(history[index - 1].number) === predictedSize) wins++;
             }
         } else {
-            const limit = model.label.startsWith('RECENT-') ? Math.min(100, history.length - 1) : history.length - 1;
+            // Validate against the complete history for both full-frequency and
+            // recency-weighted models; no recent-window cap is used.
+            const limit = history.length - 1;
             for (let index = 1; index <= limit; index++) {
                 samples++;
                 if (sizeOf(history[index - 1].number) === predictedSize) wins++;
@@ -1707,6 +1713,7 @@ function analyzeLuciferNumberToSizeHistory(historyList, currentRow) {
         analyzedNumber: bestFive[0],
         analysisNumbers: 5,
         historicalSamples: selected.samples,
+        totalHistoryRows: history.length,
         measuredAccuracy: measuredConfidence,
         modelAgreement: `${samePrediction}/${evaluated.length}`,
         numberContext: currentNumber,
@@ -1716,7 +1723,7 @@ function analyzeLuciferNumberToSizeHistory(historyList, currentRow) {
             `BEST 5 NUMBERS: [${bestFive.join(',')}] | SMALL=${smallCount}, BIG=${bigCount} -> ${finalSize}; ` +
             `selected ${selected.label}; measured ${measuredConfidence}% (${selected.wins}/${selected.samples || 0}); ` +
             `majority ${majorityConfidence}%; models agree ${samePrediction}/${evaluated.length}; ` +
-            `recent numbers ${recentNumbers}; timing bucket ${currentTime}`,
+            `ALL HISTORY rows=${history.length}; recent numbers ${recentNumbers}; timing bucket ${currentTime}`,
         bets: [{ type: 'SIZE', val: finalSize, kind: 'size' }]
     };
 }
